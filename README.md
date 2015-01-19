@@ -26,7 +26,7 @@ require('sugar-date');
 Install from bower:
 
 ```
-bower install sugar-date
+bower install sugarjs-date
 ```
 
 Add a script tag to your `index.html` file:
