@@ -1,6 +1,6 @@
 {
   "name": "sugar-date",
-  "version": "1.5.0-1",
+  "version": "1.5.1-1",
   "description": "A customised build of sugar.js containing only the date functions.",
   "main": "sugar-date.js",
   "keywords": [
