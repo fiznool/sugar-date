@@ -38,3 +38,5 @@ Add a script tag to your `index.html` file:
 ## Usage
 
 Sugar augments the built-in `Date` object. Check out [the API docs](http://sugarjs.com/date) for more details.
+
+Please note that the `.range()` method is not available. For more details, [see this issue](https://github.com/fiznool/sugar-date/issues#1).
