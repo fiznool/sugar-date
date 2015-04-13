@@ -1,0 +1,11 @@
+#! /bin/bash
+# Relies on the latest version of Sugar cloned in the same directory.
+
+sugar_dir="../Sugar"
+
+pushd $sugar_dir
+ruby script/create_build.rb --packages date --release date
+popd
+
+cp $sugar_dir/release/sugar-custom.dev.js sugar-date.js
+cp $sugar_dir/release/sugar-custom.min.js sugar-date.min.js

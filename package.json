@@ -1,6 +1,6 @@
 {
   "name": "sugar-date",
-  "version": "1.5.1-1",
+  "version": "1.5.1",
   "description": "A customised build of sugar.js containing only the date functions.",
   "main": "sugar-date.js",
   "keywords": [
@@ -10,8 +10,5 @@
   ],
   "author": "Tom Spencer <fiznool@gmail.com>",
   "license": "MIT",
-  "devDependencies": {
-    "sugar": "git://github.com/fiznool/Sugar#2a1ccab1829cde91f6826d425f73d2a84f5ccdf9"
-  },
   "repository": "https://github.com/fiznool/sugar-date"
 }

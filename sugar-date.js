@@ -784,70 +784,44 @@
       name: 'year',
       method: 'FullYear',
       ambiguous: true,
-      multiplier: function(d) {
-        var adjust = d ? (isLeapYear(d) ? 1 : 0) : 0.25;
-        return (365 + adjust) * 24 * 60 * 60 * 1000;
-      }
+      multiplier: 365.25 * 24 * 60 * 60 * 1000
     },
     {
       name: 'month',
-      error: 0.919, // Feb 1-28 over 1 month
       method: 'Month',
       ambiguous: true,
-      multiplier: function(d, ms) {
-        var days = 30.4375, inMonth;
-        if(d) {
-          inMonth = getDaysInMonth(d);
-          if(ms <= inMonth * 24 * 60 * 60 * 1000) {
-            days = inMonth;
-          }
-        }
-        return days * 24 * 60 * 60 * 1000;
-      }
+      multiplier: 30.4375 * 24 * 60 * 60 * 1000
     },
     {
       name: 'week',
       method: 'ISOWeek',
-      multiplier: function() {
-        return 7 * 24 * 60 * 60 * 1000;
-      }
+      multiplier: 7 * 24 * 60 * 60 * 1000
     },
     {
       name: 'day',
-      error: 0.958, // DST traversal over 1 day
       method: 'Date',
       ambiguous: true,
-      multiplier: function() {
-        return 24 * 60 * 60 * 1000;
-      }
+      multiplier: 24 * 60 * 60 * 1000
     },
     {
       name: 'hour',
       method: 'Hours',
-      multiplier: function() {
-        return 60 * 60 * 1000;
-      }
+      multiplier: 60 * 60 * 1000
     },
     {
       name: 'minute',
       method: 'Minutes',
-      multiplier: function() {
-        return 60 * 1000;
-      }
+      multiplier: 60 * 1000
     },
     {
       name: 'second',
       method: 'Seconds',
-      multiplier: function() {
-        return 1000;
-      }
+      multiplier: 1000
     },
     {
       name: 'millisecond',
       method: 'Milliseconds',
-      multiplier: function() {
-        return 1;
-      }
+      multiplier: 1
     }
   ];
 
@@ -911,7 +885,7 @@
     },
 
     getDuration: function(ms) {
-      return this.convertAdjustedToFormat(getAdjustedUnit(ms), 'duration');
+      return this.convertAdjustedToFormat(getAdjustedUnitForNumber(ms), 'duration');
     },
 
     hasVariant: function(code) {
@@ -936,7 +910,7 @@
       if(isFunction(format)) {
         return format.call(this, num, u, ms, mode);
       }
-      mult = this['plural'] && num > 1 ? 1 : 0;
+      mult = !this['plural'] || num === 1 ? 0 : 1;
       unit = this['units'][mult * 8 + u] || this['units'][u];
       if(this['capitalizeUnit']) unit = simpleCapitalize(unit);
       sign = this['modifiers'].filter(function(m) { return m.name == 'sign' && m.value == (ms > 0 ? 1 : -1); })[0];
@@ -1026,7 +1000,7 @@
   }
 
   function setLocalization(localeCode, set) {
-    var loc, canAbbreviate;
+    var loc;
 
     function initializeField(name) {
       var val = loc[name];
@@ -1048,11 +1022,11 @@
       return str.split('|').forEach(fn);
     }
 
-    function setArray(name, abbreviate, multiple) {
+    function setArray(name, abbreviationSize, multiple) {
       var arr = [];
       loc[name].forEach(function(full, i) {
-        if(abbreviate) {
-          full += '+' + full.slice(0,3);
+        if(abbreviationSize) {
+          full += '+' + full.slice(0, abbreviationSize);
         }
         eachAlternate(full, function(alt, j) {
           arr[j * multiple + i] = alt.toLowerCase();
@@ -1074,6 +1048,13 @@
         arr = arr.concat(numbers);
       }
       return arrayToAlternates(arr);
+    }
+
+    function getAbbreviationSize(type) {
+      // Month suffixes like those found in Asian languages
+      // serve as a good proxy to detect month/weekday abbreviations.
+      var hasMonthSuffix = !!loc['monthSuffix'];
+      return loc[type + 'Abbreviate'] || (hasMonthSuffix ? null : 3);
     }
 
     function setDefault(name, value) {
@@ -1115,12 +1096,10 @@
     initializeField('modifiers');
     'months,weekdays,units,numbers,articles,tokens,timeMarker,ampm,timeSuffixes,dateParse,timeParse'.split(',').forEach(initializeField);
 
-    canAbbreviate = !loc['monthSuffix'];
-
     buildNumbers();
 
-    setArray('months',   canAbbreviate, 12);
-    setArray('weekdays', canAbbreviate, 7);
+    setArray('months', getAbbreviationSize('month'), 12);
+    setArray('weekdays', getAbbreviationSize('weekday'), 7);
     setArray('units', false, 8);
 
     setDefault('code', localeCode);
@@ -1301,8 +1280,13 @@
     return recognized ? setDate(d, [params, true]) : d;
   }
 
-  function setWeekday(d, dow) {
+  function setWeekday(d, dow, forward) {
     if(isUndefined(dow)) return;
+    // Dates like "the 2nd Tuesday of June" need to be set forward
+    // so make sure that the day of the week reflects that here.
+    if (forward && dow % 7 < d.getDay()) {
+      dow += 7;
+    }
     return callDateSet(d, 'Date', callDateGet(d, 'Date') + dow - callDateGet(d, 'Day'));
   }
 
@@ -1371,8 +1355,9 @@
     });
   }
 
-  function getExtendedDate(f, localeCode, prefer, forceUTC) {
-    var d, relative, baseLocalization, afterCallbacks, loc, set, unit, unitIndex, weekday, num, tmp;
+  function getExtendedDate(contextDate, f, localeCode, prefer, forceUTC) {
+    // TODO can we split this up into smaller methods?
+    var d, relative, baseLocalization, afterCallbacks, loc, set, unit, unitIndex, weekday, num, tmp, weekdayForward;
 
     d = getNewDate();
     afterCallbacks = [];
@@ -1387,9 +1372,13 @@
       });
     }
 
+    function getWeekdayWithMultiplier(w) {
+      var num = set['num'] && !set['unit'] ? set['num'] : 1;
+      return (7 * (num - 1)) + w;
+    }
+
     function setWeekdayOfMonth() {
-      var w = d.getDay();
-      setWeekday(d, (7 * (set['num'] - 1)) + (w > weekday ? weekday + 7 : weekday));
+      setWeekday(d, set['weekday'], true);
     }
 
     function setUnitEdge() {
@@ -1478,50 +1467,50 @@
               return false;
             }
 
-            // If there's a variant (crazy Endian American format), swap the month and day.
             if(dif.variant && !isString(set['month']) && (isString(set['date']) || baseLocalization.hasVariant(localeCode))) {
+              // If there's a variant (crazy Endian American format), swap the month and day.
               tmp = set['month'];
               set['month'] = set['date'];
               set['date']  = tmp;
             }
 
-            // If the year is 2 digits then get the implied century.
             if(hasAbbreviatedYear(set)) {
+              // If the year is 2 digits then get the implied century.
               set['year'] = getYearFromAbbreviation(set['year']);
             }
 
-            // Set the month which may be localized.
             if(set['month']) {
+              // Set the month which may be localized.
               set['month'] = loc.getMonth(set['month']);
               if(set['shift'] && !set['unit']) set['unit'] = loc['units'][7];
             }
 
-            // If there is both a weekday and a date, the date takes precedence.
             if(set['weekday'] && set['date']) {
+              // If there is both a weekday and a date, the date takes precedence.
               delete set['weekday'];
-            // Otherwise set a localized weekday.
             } else if(set['weekday']) {
+              // Otherwise set a localized weekday.
               set['weekday'] = loc.getWeekday(set['weekday']);
-              if(set['shift'] && !set['unit']) set['unit'] = loc['units'][5];
+              if(set['shift'] && !set['unit']) {
+                set['unit'] = loc['units'][5];
+              }
             }
 
-            // Relative day localizations such as "today" and "tomorrow".
             if(set['day'] && (tmp = loc.modifiersByName[set['day']])) {
+              // Relative day localizations such as "today" and "tomorrow".
               set['day'] = tmp.value;
               resetDate(d);
               relative = true;
-            // If the day is a weekday, then set that instead.
             } else if(set['day'] && (weekday = loc.getWeekday(set['day'])) > -1) {
+              // If the day is a weekday, then set that instead.
               delete set['day'];
+              set['weekday'] = getWeekdayWithMultiplier(weekday);
               if(set['num'] && set['month']) {
-                // If we have "the 2nd tuesday of June", set the day to the beginning of the month, then
-                // set the weekday after all other properties have been set. The weekday needs to be set
-                // after the actual set because it requires overriding the "prefer" argument which
-                // could unintentionally send the year into the future, past, etc.
-                afterDateSet(setWeekdayOfMonth);
-                set['day'] = 1;
-              } else {
-                set['weekday'] = weekday;
+                // If we have "the 2nd Tuesday of June", then pass the "weekdayForward" flag
+                // along to updateDate so that the date does not accidentally traverse into
+                // the previous month. This needs to be independent of the "prefer" flag because
+                // we are only ensuring that the weekday is in the future, not the entire date.
+                weekdayForward = true;
               }
             }
 
@@ -1529,15 +1518,16 @@
               set['date'] = loc.getNumericDate(set['date']);
             }
 
-            // If the time is 1pm-11pm advance the time by 12 hours.
             if(loc.matchPM(set['ampm']) && set['hour'] < 12) {
+              // If the time is 1pm-11pm advance the time by 12 hours.
               set['hour'] += 12;
             } else if(loc.matchAM(set['ampm']) && set['hour'] === 12) {
+              // If it is 12:00am then set the hour to 0.
               set['hour'] = 0;
             }
 
-            // Adjust for timezone offset
             if('offset_hours' in set || 'offset_minutes' in set) {
+              // Adjust for timezone offset
               setUTC(d, true);
               set['offset_minutes'] = set['offset_minutes'] || 0;
               set['offset_minutes'] += set['offset_hours'] * 60;
@@ -1547,8 +1537,8 @@
               set['minute'] -= set['offset_minutes'];
             }
 
-            // Date has a unit like "days", "months", etc. are all relative to the current date.
             if(set['unit']) {
+              // Date has a unit like "days", "months", etc. are all relative to the current date.
               relative  = true;
               num       = loc.getNumber(set['num']);
               unitIndex = loc.getUnitIndex(set['unit']);
@@ -1560,18 +1550,18 @@
               // set them after the relative ones have been set.
               separateAbsoluteUnits();
 
-              // Shift and unit, ie "next month", "last week", etc.
               if(set['shift']) {
+                // Shift and unit, ie "next month", "last week", etc.
                 num *= (tmp = loc.modifiersByName[set['shift']]) ? tmp.value : 0;
               }
 
-              // Unit and sign, ie "months ago", "weeks from now", etc.
               if(set['sign'] && (tmp = loc.modifiersByName[set['sign']])) {
+                // Unit and sign, ie "months ago", "weeks from now", etc.
                 num *= tmp.value;
               }
 
-              // Units can be with non-relative dates, set here. ie "the day after monday"
               if(isDefined(set['weekday'])) {
+                // Units can be with non-relative dates, set here. ie "the day after monday"
                 setDate(d, [{'weekday': set['weekday'] }, true]);
                 delete set['weekday'];
               }
@@ -1580,9 +1570,9 @@
               set[unit] = (set[unit] || 0) + num;
             }
 
-            // If there is an "edge" it needs to be set after the
-            // other fields are set. ie "the end of February"
             if(set['edge']) {
+              // If there is an "edge" it needs to be set after the
+              // other fields are set. ie "the end of February"
               afterDateSet(setUnitEdge);
             }
 
@@ -1613,6 +1603,15 @@
           d.addMinutes(-d.getTimezoneOffset());
         }
       } else if(relative) {
+        if (contextDate) {
+          // If this is a relative date and is being created via an instance
+          // method (usually "[unit]FromNow", etc), then use the original date
+          // (that the instance method was called on) as the starting point
+          // rather than the freshly created date above to avoid subtle
+          // discrepancies due to the fact that the fresh date was created
+          // slightly later.
+          d = cloneDate(contextDate);
+        }
         advanceDate(d, [set]);
       } else {
         if(d._utc) {
@@ -1620,7 +1619,7 @@
           // so preemtively reset the time here to prevent this.
           resetDate(d);
         }
-        updateDate(d, set, true, false, prefer);
+        updateDate(d, set, true, false, prefer, weekdayForward);
       }
       fireCallbacks();
       // A date created by parsing a string presumes that the format *itself* is UTC, but
@@ -1676,40 +1675,48 @@
     return 32 - callDateGet(new date(callDateGet(d, 'FullYear'), callDateGet(d, 'Month'), 32), 'Date');
   }
 
-  function getAdjustedUnit(ms) {
-    var next, ams = abs(ms), value = ams, unitIndex = 0;
-    iterateOverDateUnits(function(name, unit, i) {
-      next = floor(withPrecision(ams / unit.multiplier(), 1));
-      if(next >= 1) {
-        value = next;
-        unitIndex = i;
+  // Gets an "adjusted date unit" which is a way of representing
+  // the largest possible meaningful unit. In other words, if passed
+  // 3600000, this will return an array which represents "1 hour".
+  function getAdjustedUnit(ms, fn) {
+    var unitIndex = 0, value = 0;
+    iterateOverObject(DateUnits, function(i, unit) {
+      value = abs(fn(unit));
+      if(value >= 1) {
+        unitIndex = 7 - i;
+        return false;
       }
-    }, 1);
+    });
     return [value, unitIndex, ms];
   }
 
-  function getRelativeWithMonthFallback(date) {
-    var adu = getAdjustedUnit(sugarDate.millisecondsFromNow(date));
-    if(allowMonthFallback(date, adu)) {
-      // If the adjusted unit is in months, then better to use
-      // the "monthsfromNow" which applies a special error margin
-      // for edge cases such as Jan-09 - Mar-09 being less than
-      // 2 months apart (when using a strict numeric definition).
-      // The third "ms" element in the array will handle the sign
-      // (past or future), so simply take the absolute value here.
-      adu[0] = abs(sugarDate.monthsFromNow(date));
-      adu[1] = 6;
+  // Gets the adjusted unit based on simple division by
+  // date unit multiplier.
+  function getAdjustedUnitForNumber(ms) {
+    return getAdjustedUnit(ms, function(unit) {
+      return floor(withPrecision(ms / unit.multiplier, 1));
+    });
+  }
+
+  // Gets the adjusted unit using the [unit]FromNow methods,
+  // which use internal date methods that neatly avoid vaguely
+  // defined units of time (days in month, leap years, etc).
+  function getAdjustedUnitForDate(d) {
+    var ms = sugarDate.millisecondsFromNow(d);
+    if (d.getTime() > date.now()) {
+
+      // This adjustment is solely to allow
+      // Date.create('1 year from now').relative() to remain
+      // "1 year from now" instead of "11 months from now",
+      // as it would be due to the fact that the internal
+      // "now" date in "relative" is created slightly after
+      // that in "create".
+      d = new date(d.getTime() + 10);
     }
-    return adu;
+    return getAdjustedUnit(ms, function(unit) {
+      return abs(sugarDate[unit.name + 'sFromNow'](d));
+    });
   }
-
-  function allowMonthFallback(date, adu) {
-    // Allow falling back to monthsFromNow if the unit is in months...
-    return adu[1] === 6 ||
-    // ...or if it's === 4 weeks and there are more days than in the given month
-    (adu[1] === 5 && adu[0] === 4 && sugarDate.daysFromNow(date) >= getDaysInMonth(getNewDate()));
-  }
-
 
   // Date format token helpers
 
@@ -1729,6 +1736,8 @@
       var dow = callDateGet(d, 'Day');
       return getLocalization(localeCode)['weekdays'][dow];
     }
+    createFormatToken('do', fn, 2);
+    createFormatToken('Do', fn, 2, 1);
     createFormatToken('dow', fn, 3);
     createFormatToken('Dow', fn, 3, 1);
     createFormatToken('weekday', fn);
@@ -1808,11 +1817,11 @@
     } else if(isString(sugarDate[format])) {
       format = sugarDate[format];
     } else if(isFunction(format)) {
-      adu = getRelativeWithMonthFallback(date);
+      adu = getAdjustedUnitForDate(date);
       format = format.apply(date, adu.concat(getLocalization(localeCode)));
     }
     if(!format && relative) {
-      adu = adu || getRelativeWithMonthFallback(date);
+      adu = adu || getAdjustedUnitForDate(date);
       // Adjust up if time is in ms, as this doesn't
       // look very good for a standard relative date.
       if(adu[1] === 0) {
@@ -1855,7 +1864,7 @@
 
   function compareDate(d, find, localeCode, buffer, forceUTC) {
     var p, t, min, max, override, accuracy = 0, loBuffer = 0, hiBuffer = 0;
-    p = getExtendedDate(find, localeCode, null, forceUTC);
+    p = getExtendedDate(null, find, localeCode, null, forceUTC);
     if(buffer > 0) {
       loBuffer = hiBuffer = buffer;
       override = true;
@@ -1898,8 +1907,8 @@
     return max;
   }
 
-  function updateDate(d, params, reset, advance, prefer) {
-    var weekday, specificityIndex;
+  function updateDate(d, params, reset, advance, prefer, weekdayForward) {
+    var specificityIndex;
 
     function getParam(key) {
       return isDefined(params[key]) ? params[key] : params[key + 's'];
@@ -1910,7 +1919,7 @@
     }
 
     function uniqueParamExists(key, isDay) {
-      return paramExists(key) || (isDay && paramExists('weekday'));
+      return paramExists(key) || (isDay && paramExists('weekday') && !paramExists('month'));
     }
 
     function canDisambiguate() {
@@ -1958,7 +1967,7 @@
       if(isUndefined(value)) return;
       if(advance) {
         if(name === 'week') {
-          value  = (params['day'] || 0) + (value * 7);
+          value *= 7;
           method = 'Date';
         }
         value = (value * advance) + callDateGet(d, method);
@@ -1985,12 +1994,12 @@
       }
     });
 
-
-    // If a weekday is included in the params, set it ahead of time and set the params
-    // to reflect the updated date so that resetting works properly.
+    // If a weekday is included in the params and no 'date' parameter
+    // is overriding, set it here after all other units have been set.
+    // Note that the date has to be perfectly set before disambiguation
+    // so that a proper comparison can be made.
     if(!advance && !paramExists('day') && paramExists('weekday')) {
-      var weekday = getParam('weekday'), isAhead, futurePreferred;
-      setWeekday(d, weekday);
+      setWeekday(d, getParam('weekday'), weekdayForward);
     }
 
     // If past or future is preferred, then the process of "disambiguation" will ensure that an
@@ -2032,13 +2041,11 @@
     });
   }
 
-
   // If the month is being set, then we don't want to accidentally
   // traverse into a new month just because the target month doesn't have enough
   // days. In other words, "5 months ago" from July 30th is still February, even
   // though there is no February 30th, so it will of necessity be February 28th
   // (or 29th in the case of a leap year).
-
   function checkMonthTraversal(date, targetMonth) {
     if(targetMonth < 0) {
       targetMonth = targetMonth % 12 + 12;
@@ -2048,16 +2055,21 @@
     }
   }
 
-  function createDate(args, prefer, forceUTC) {
+  function createDateFromArgs(contextDate, args, prefer, forceUTC) {
     var f, localeCode;
     if(isNumber(args[1])) {
-      // If the second argument is a number, then we have an enumerated constructor type as in "new Date(2003, 2, 12);"
+      // If the second argument is a number, then we have an
+      // enumerated constructor type as in "new Date(2003, 2, 12);"
       f = collectDateArguments(args)[0];
     } else {
-      f          = args[0];
+      f = args[0];
       localeCode = args[1];
     }
-    return getExtendedDate(f, localeCode, prefer, forceUTC).date;
+    return createDate(contextDate, f, localeCode, prefer, forceUTC);
+  }
+
+  function createDate(contextDate, f, localeCode, prefer, forceUTC) {
+    return getExtendedDate(contextDate, f, localeCode, prefer, forceUTC).date;
   }
 
   function invalidateDate(d) {
@@ -2269,46 +2281,64 @@
 
   function buildDateMethods() {
     extendSimilar(date, DateUnits, function(methods, u, i) {
-      var name = u.name, caps = simpleCapitalize(name), multiplier = u.multiplier(), since, until;
+      var name = u.name, caps = simpleCapitalize(name), since, until;
       u.addMethod = 'add' + caps + 's';
-      // "since/until now" only count "past" an integer, i.e. "2 days ago" is
-      // anything between 2 - 2.999 days. The default margin of error is 0.999,
-      // but "months" have an inherently larger margin, as the number of days
-      // in a given month may be significantly less than the number of days in
-      // the average month, so for example "30 days" before March 15 may in fact
-      // be 1 month ago. Years also have a margin of error due to leap years,
-      // but this is roughly 0.999 anyway (365 / 365.25). Other units do not
-      // technically need the error margin applied to them but this accounts
-      // for discrepancies like (15).hoursAgo() which technically creates the
-      // current date first, then creates a date 15 hours before and compares
-      // them, the discrepancy between the creation of the 2 dates means that
-      // they may actually be 15.0001 hours apart. Milliseconds don't have
-      // fractions, so they won't be subject to this error margin.
-      function applyErrorMargin(ms) {
-        var num      = ms / multiplier,
-            fraction = num % 1,
-            error    = u.error || 0.999;
-        if(fraction && abs(fraction % 1) > error) {
-          num = round(num);
-        }
-        return num < 0 ? ceil(num) : floor(num);
-      }
-      since = function(f, localeCode) {
-        return applyErrorMargin(this.getTime() - createDate([f, localeCode]).getTime());
-      };
-      until = function(f, localeCode) {
-        return applyErrorMargin(createDate([f, localeCode]).getTime() - this.getTime());
-      };
-      methods[name+'sAgo']     = until;
-      methods[name+'sUntil']   = until;
-      methods[name+'sSince']   = since;
-      methods[name+'sFromNow'] = since;
-      methods[u.addMethod] = function(num, reset) {
+
+      function add(num, reset) {
         var set = {};
         set[name] = num;
         return advanceDate(this, [set, reset]);
-      };
-      buildNumberToDateAlias(u, multiplier);
+      }
+
+      function timeDistanceNumeric(d1, d2) {
+        var n = (d1.getTime() - d2.getTime()) / u.multiplier;
+        return n < 0 ? ceil(n) : floor(n);
+      }
+
+      function addUnit(d, n, dsc) {
+        var d2;
+        add.call(d, n);
+        // "dsc" = "date shift compensation"
+        // This number should only be passed when traversing months to
+        // compensate for date shifting. For example, calling "1 month ago"
+        // on March 30th will result in February 28th, as there are not enough
+        // days. This is not an issue when creating new dates, as "2 months ago"
+        // gives an exact target to set, and the date shift is expected. However,
+        // when counting months using unit traversal, the date needs to stay the
+        // same if possible. To compensate for this, we need to try to reset the
+        // date after every iteration, and use the result if possible.
+        if (dsc && callDateGet(d, 'Date') !== dsc) {
+          d2 = cloneDate(d);
+          callDateSet(d2, 'Date', dsc);
+          if (callDateGet(d2, 'Date') === dsc) {
+            return d2;
+          }
+        }
+        return d;
+      }
+
+      function timeDistanceTraversal(d1, d2) {
+        var d, inc, n, dsc, count = 0;
+        d = cloneDate(d1);
+        inc = d1 < d2;
+        n = inc ? 1 : -1
+        dsc = name === 'month' && callDateGet(d, 'Date');
+        d = addUnit(d, n, dsc);
+        while (inc ? d <= d2 : d >= d2) {
+          count += -n;
+          d = addUnit(d, n, dsc);
+        }
+        return count;
+      }
+
+      function compareSince(fn, d, args) {
+        return fn(d, createDateFromArgs(d, args, 0, false));
+      }
+
+      function compareUntil(fn, d, args) {
+        return fn(createDateFromArgs(d, args, 0, false), d);
+      }
+
       if(i < 3) {
         ['Last','This','Next'].forEach(function(shift) {
           methods['is' + shift + caps] = function() {
@@ -2323,7 +2353,27 @@
         methods['endOf' + caps] = function() {
           return moveToEndOfUnit(this, name);
         };
+        since = function() {
+          return compareSince(timeDistanceTraversal, this, arguments);
+        };
+        until = function() {
+          return compareUntil(timeDistanceTraversal, this, arguments);
+        };
+      } else {
+        since = function() {
+          return compareSince(timeDistanceNumeric, this, arguments);
+        };
+        until = function() {
+          return compareUntil(timeDistanceNumeric, this, arguments);
+        };
       }
+      methods[name + 'sAgo']     = until;
+      methods[name + 'sUntil']   = until;
+      methods[name + 'sSince']   = since;
+      methods[name + 'sFromNow'] = since;
+
+      methods[u.addMethod] = add;
+      buildNumberToDateAlias(u, u.multiplier);
     });
   }
 
@@ -2478,15 +2528,15 @@
     extend(date, {
       'utc': {
         'create': function() {
-          return createDate(arguments, 0, true);
+          return createDateFromArgs(null, arguments, 0, true);
         },
 
         'past': function() {
-          return createDate(arguments, -1, true);
+          return createDateFromArgs(null, arguments, -1, true);
         },
 
         'future': function() {
-          return createDate(arguments, 1, true);
+          return createDateFromArgs(null, arguments, 1, true);
         }
       }
     }, false);
@@ -2527,7 +2577,7 @@
      *
      ***/
     'create': function() {
-      return createDate(arguments);
+      return createDateFromArgs(null, arguments);
     },
 
      /***
@@ -2545,7 +2595,7 @@
      *
      ***/
     'past': function() {
-      return createDate(arguments, -1);
+      return createDateFromArgs(null, arguments, -1);
     },
 
      /***
@@ -2563,7 +2613,7 @@
      *
      ***/
     'future': function() {
-      return createDate(arguments, 1);
+      return createDateFromArgs(null, arguments, 1);
     },
 
      /***
@@ -2827,7 +2877,7 @@
      *
      ***/
     'isAfter': function(d, margin, utc) {
-      return this.getTime() > createDate([d]).getTime() - (margin || 0);
+      return this.getTime() > createDate(null, d).getTime() - (margin || 0);
     },
 
      /***
@@ -2842,7 +2892,7 @@
      *
      ***/
     'isBefore': function(d, margin) {
-      return this.getTime() < createDate([d]).getTime() + (margin || 0);
+      return this.getTime() < createDate(null, d).getTime() + (margin || 0);
     },
 
      /***
@@ -2858,8 +2908,8 @@
      ***/
     'isBetween': function(d1, d2, margin) {
       var t  = this.getTime();
-      var t1 = createDate([d1]).getTime();
-      var t2 = createDate([d2]).getTime();
+      var t1 = createDate(null, d1).getTime();
+      var t2 = createDate(null, d2).getTime();
       var lo = min(t1, t2);
       var hi = max(t1, t2);
       margin = margin || 0;
@@ -3182,10 +3232,10 @@
       return round(this * multiplier);
     }
     function after() {
-      return sugarDate[u.addMethod](createDate(arguments), this);
+      return sugarDate[u.addMethod](createDateFromArgs(null, arguments), this);
     }
     function before() {
-      return sugarDate[u.addMethod](createDate(arguments), -this);
+      return sugarDate[u.addMethod](createDateFromArgs(null, arguments), -this);
     }
     methods[name] = base;
     methods[name + 's'] = base;
